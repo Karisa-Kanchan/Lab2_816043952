@@ -1,0 +1,156 @@
+/*
+ * Name: Karisa Kanchan
+ * Student ID: 816043952
+ * Lab 2 - Question 3 different priorities
+ * File: q2.c
+ *
+ * Purpose:
+ * Create three FreeRTOS tasks and a mutex to control access
+ * to a shared LED on the Arduino MKR Zero.
+ *
+ * Task 1: Turn the LED on, actively wait for 500 ms, then yield.
+ * Task 2: Turn the LED off, then block for 1000 ms.
+ * Task 3: Print a status message, then block for 1000 ms.
+ *
+ * The LED tasks must acquire the mutex before accessing the LED
+ * and release it when their protected operation is complete.
+ */
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+#include "q2.h"
+
+/* Each task has its own priority, defined using a const int. */
+static const int TASK1_PRIORITY = 3;
+static const int TASK2_PRIORITY = 2;
+static const int TASK3_PRIORITY = 1;
+
+static SemaphoreHandle_t led_mutex;
+
+/* Count completed LED operations for the Q3 comparison. */
+volatile uint32_t task1_count = 0U;
+volatile uint32_t task2_count = 0U;
+
+/* Actively wait: this does not put the task into the Blocked state. */
+
+static void active_wait_500ms(void)
+{
+    uint32_t start = board_time_us();
+
+    while ((uint32_t)(board_time_us() - start) < 500000UL)
+    {
+        __asm__ __volatile__("nop");
+    }
+}
+
+
+/* Task 1: LED ON, actively wait 0.5 seconds, then yield. */
+static void task1(void *parameters)
+{
+    (void)parameters;
+
+    for (;;)
+    {
+        if (xSemaphoreTake(led_mutex, portMAX_DELAY) == pdTRUE)
+        {
+            board_led_write(1);
+            active_wait_500ms();
+            task1_count++;
+
+            xSemaphoreGive(led_mutex);
+            
+            /* Report every four completed iterations, outside the mutex. */
+            if ((task1_count % 4U) == 0U)
+            {
+                board_diagnostic_print(task1_count, task2_count);
+            }
+        }
+
+        /*
+         * Task 1 has the highest priority (3) and remains Ready
+         * because it uses active waiting instead of vTaskDelay().
+         *
+         * taskYIELD() does not allow lower-priority tasks to run
+         * while Task 1 remains Ready. Therefore, Task 1 continues
+         * executing and Tasks 2 and 3 may experience starvation.
+         *
+         * This explains why the diagnostic output shows Task 1
+         * increasing while Task 2 remains at zero.
+         *
+         * Although the mutex supports priority inheritance, this
+         * experiment does not demonstrate priority inheritance
+         * because Task 1 does not block waiting for a mutex
+         * held by a lower-priority task.
+         */
+
+        taskYIELD();
+    }
+}
+
+/* Task 2: LED OFF, then task-delay for 1 second. */
+static void task2(void *parameters)
+{
+    (void)parameters;
+
+    for (;;)
+    {
+        if (xSemaphoreTake(led_mutex, portMAX_DELAY) == pdTRUE)
+        {
+            board_led_write(0);
+            task2_count++;
+            xSemaphoreGive(led_mutex);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+/* Task 3: print a status message, then task-delay for 1 second. */
+static void task3(void *parameters)
+{
+    (void)parameters;
+
+    for (;;)
+    {
+        board_status_print();
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+int q2_start(void)
+{
+    led_mutex = xSemaphoreCreateMutex();
+
+    if (led_mutex == NULL)
+    {
+        return 0;
+    }
+
+    if (xTaskCreate(task1, "LED_ON", 256, NULL,
+                    TASK1_PRIORITY, NULL) != pdPASS)
+    {
+        return 0;
+    }
+
+    if (xTaskCreate(task2, "LED_OFF", 256, NULL,
+                    TASK2_PRIORITY, NULL) != pdPASS)
+    {
+        return 0;
+    }
+
+    if (xTaskCreate(task3, "STATUS", 256, NULL,
+                    TASK3_PRIORITY, NULL) != pdPASS)
+    {
+        return 0;
+    }
+
+    vTaskStartScheduler();
+
+    /* Reaching here means the scheduler could not start. */
+    return 0;
+}
